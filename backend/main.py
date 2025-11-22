@@ -10,6 +10,8 @@ import logging
 import io
 import pandas as pd
 from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
 
 from parser import ExcelParser
 from parser.learning import ParserLearning
@@ -504,59 +506,92 @@ async def export_to_excel(
 @app.post("/api/batch-upload")
 async def batch_upload(files: List[UploadFile] = File(...)):
     """
-    Upload and parse multiple Excel files at once
+    Upload and parse multiple Excel files at once using parallel processing
     """
-    results = []
+    start_time = datetime.utcnow()
     
+    # Read all file contents first (async)
+    file_data = []
     for file in files:
-        try:
-            # Validate file type
-            if not file.filename.endswith(('.xlsx', '.xls')):
-                results.append({
-                    'filename': file.filename,
-                    'success': False,
-                    'error': 'Invalid file type'
-                })
-                continue
-            
-            # Parse file
+        if file.filename.endswith(('.xlsx', '.xls')):
             content = await file.read()
+            file_data.append((file.filename, content))
+        else:
+            file_data.append((file.filename, None))  # Invalid type
+    
+    def process_single_file(filename: str, content: bytes) -> Dict[str, Any]:
+        """Process a single file in a thread"""
+        if content is None:
+            return {
+                'filename': filename,
+                'success': False,
+                'error': 'Invalid file type'
+            }
+        
+        try:
             parser = ExcelParser()
-            parse_result = parser.parse_bytes(content, file.filename)
+            parse_result = parser.parse_bytes(content, filename)
             
             if parse_result['success']:
-                # Insert items
-                items = parse_result['items']
-                if items:
-                    for item in items:
-                        item['created_at'] = datetime.utcnow()
-                        item['updated_at'] = datetime.utcnow()
-                    
-                    await db.production_items.insert_many(items)
-                
-                results.append({
-                    'filename': file.filename,
+                return {
+                    'filename': filename,
                     'success': True,
-                    'items_count': len(items),
+                    'items': parse_result['items'],
+                    'items_count': len(parse_result['items']),
                     'ai_summary': parse_result.get('ai_summary')
-                })
+                }
             else:
-                results.append({
-                    'filename': file.filename,
+                return {
+                    'filename': filename,
                     'success': False,
                     'error': parse_result.get('error', 'Unknown error')
-                })
-                
+                }
         except Exception as e:
-            logger.error(f"Error processing {file.filename}: {str(e)}")
-            results.append({
-                'filename': file.filename,
+            logger.error(f"Error processing {filename}: {str(e)}")
+            return {
+                'filename': filename,
                 'success': False,
                 'error': str(e)
-            })
+            }
     
+    # Process files in parallel using ThreadPoolExecutor
+    results = []
+    max_workers = min(len(file_data), 4)  # Limit to 4 threads
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_file = {
+            executor.submit(process_single_file, filename, content): filename
+            for filename, content in file_data
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_file):
+            result = future.result()
+            results.append(result)
+            logger.info(f"Completed processing: {result['filename']}")
+    
+    # Insert all successful items to MongoDB
+    for result in results:
+        if result['success'] and 'items' in result:
+            items = result['items']
+            if items:
+                for item in items:
+                    item['created_at'] = datetime.utcnow()
+                    item['updated_at'] = datetime.utcnow()
+                
+                await db.production_items.insert_many(items)
+            
+            # Remove items from result (don't send in response)
+            del result['items']
+    
+    # Calculate summary
     successful = sum(1 for r in results if r['success'])
     total_items = sum(r.get('items_count', 0) for r in results if r['success'])
+    
+    # Calculate processing time
+    end_time = datetime.utcnow()
+    processing_time_ms = (end_time - start_time).total_seconds() * 1000
     
     return {
         'results': results,
@@ -564,7 +599,9 @@ async def batch_upload(files: List[UploadFile] = File(...)):
             'total_files': len(files),
             'successful': successful,
             'failed': len(files) - successful,
-            'total_items_parsed': total_items
+            'total_items_parsed': total_items,
+            'processing_time_ms': round(processing_time_ms, 2),
+            'parallel_workers': max_workers
         }
     }
 
