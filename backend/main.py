@@ -1,12 +1,14 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from bson import ObjectId
 import os
 import logging
+import io
+import pandas as pd
 from contextlib import asynccontextmanager
 
 from parser import ExcelParser
@@ -122,9 +124,21 @@ async def upload_file(file: UploadFile = File(...)):
                 error=parse_result.get('error', 'Unknown error')
             )
         
-        # Insert items into MongoDB
+        # Check for duplicates
         items = parse_result['items']
+        duplicate_warning = None
         if items:
+            # Check if similar file was already uploaded
+            first_item = items[0]
+            existing = await db.production_items.find_one({
+                'source_file': file.filename,
+                'order_number': first_item.get('order_number')
+            })
+            
+            if existing:
+                duplicate_warning = f"File '{file.filename}' may have been uploaded before"
+                logger.warning(duplicate_warning)
+            
             # Add created_at and updated_at timestamps
             for item in items:
                 item['created_at'] = datetime.utcnow()
@@ -344,6 +358,207 @@ async def get_parser_statistics():
     except Exception as e:
         logger.error(f"Error fetching statistics: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/statistics")
+async def get_dashboard_statistics():
+    """
+    Get overall statistics for dashboard
+    """
+    try:
+        # Get total counts
+        total_items = await db.production_items.count_documents({})
+        
+        # Get status distribution
+        status_pipeline = [
+            {'$group': {'_id': '$status', 'count': {'$sum': 1}}}
+        ]
+        status_dist = await db.production_items.aggregate(status_pipeline).to_list(None)
+        
+        # Get source file distribution
+        source_pipeline = [
+            {'$group': {'_id': '$source_file', 'count': {'$sum': 1}}}
+        ]
+        source_dist = await db.production_items.aggregate(source_pipeline).to_list(None)
+        
+        # Get average quantity
+        avg_pipeline = [
+            {'$group': {'_id': None, 'avg_quantity': {'$avg': '$quantity'}}}
+        ]
+        avg_result = await db.production_items.aggregate(avg_pipeline).to_list(None)
+        avg_quantity = avg_result[0]['avg_quantity'] if avg_result else 0
+        
+        return {
+            'total_items': total_items,
+            'by_status': {item['_id']: item['count'] for item in status_dist},
+            'by_source': {item['_id']: item['count'] for item in source_dist},
+            'average_quantity': round(avg_quantity, 2) if avg_quantity else 0
+        }
+    except Exception as e:
+        logger.error(f"Error fetching statistics: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/upload-history")
+async def get_upload_history(limit: int = 10):
+    """
+    Get upload history
+    """
+    try:
+        # Get unique source files with upload info
+        pipeline = [
+            {'$group': {
+                '_id': '$source_file',
+                'first_upload': {'$min': '$uploaded_at'},
+                'last_upload': {'$max': '$uploaded_at'},
+                'item_count': {'$sum': 1}
+            }},
+            {'$sort': {'last_upload': -1}},
+            {'$limit': limit}
+        ]
+        
+        history = await db.production_items.aggregate(pipeline).to_list(None)
+        
+        formatted_history = []
+        for entry in history:
+            formatted_history.append({
+                'filename': entry['_id'],
+                'first_upload': entry['first_upload'].isoformat() if entry['first_upload'] else None,
+                'last_upload': entry['last_upload'].isoformat() if entry['last_upload'] else None,
+                'item_count': entry['item_count']
+            })
+        
+        return {'history': formatted_history, 'total': len(formatted_history)}
+    except Exception as e:
+        logger.error(f"Error fetching upload history: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/export")
+async def export_to_excel(
+    style: Optional[str] = None,
+    status: Optional[str] = None
+):
+    """
+    Export production items to Excel file
+    """
+    try:
+        # Build query filter
+        query = {}
+        if style:
+            query['style'] = {'$regex': style, '$options': 'i'}
+        if status:
+            query['status'] = status
+        
+        # Get all matching items
+        items = await db.production_items.find(query).to_list(length=None)
+        
+        if not items:
+            raise HTTPException(status_code=404, detail="No items found to export")
+        
+        # Prepare data for Excel
+        export_data = []
+        for item in items:
+            export_data.append({
+                'Order Number': item.get('order_number', ''),
+                'Style': item.get('style', ''),
+                'Fabric': item.get('fabric', ''),
+                'Color': item.get('color', ''),
+                'Quantity': item.get('quantity', ''),
+                'Shipping Date': item.get('shipping_date', ''),
+                'Status': item.get('status', ''),
+                'Source File': item.get('source_file', ''),
+                'Uploaded At': item.get('uploaded_at', '').isoformat() if isinstance(item.get('uploaded_at'), datetime) else item.get('uploaded_at', '')
+            })
+        
+        # Create Excel file
+        df = pd.DataFrame(export_data)
+        
+        # Write to bytes buffer
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Production Items')
+        output.seek(0)
+        
+        # Generate filename
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        filename = f"production_items_{timestamp}.xlsx"
+        
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error exporting data: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/batch-upload")
+async def batch_upload(files: List[UploadFile] = File(...)):
+    """
+    Upload and parse multiple Excel files at once
+    """
+    results = []
+    
+    for file in files:
+        try:
+            # Validate file type
+            if not file.filename.endswith(('.xlsx', '.xls')):
+                results.append({
+                    'filename': file.filename,
+                    'success': False,
+                    'error': 'Invalid file type'
+                })
+                continue
+            
+            # Parse file
+            content = await file.read()
+            parser = ExcelParser()
+            parse_result = parser.parse_bytes(content, file.filename)
+            
+            if parse_result['success']:
+                # Insert items
+                items = parse_result['items']
+                if items:
+                    for item in items:
+                        item['created_at'] = datetime.utcnow()
+                        item['updated_at'] = datetime.utcnow()
+                    
+                    await db.production_items.insert_many(items)
+                
+                results.append({
+                    'filename': file.filename,
+                    'success': True,
+                    'items_count': len(items),
+                    'ai_summary': parse_result.get('ai_summary')
+                })
+            else:
+                results.append({
+                    'filename': file.filename,
+                    'success': False,
+                    'error': parse_result.get('error', 'Unknown error')
+                })
+                
+        except Exception as e:
+            logger.error(f"Error processing {file.filename}: {str(e)}")
+            results.append({
+                'filename': file.filename,
+                'success': False,
+                'error': str(e)
+            })
+    
+    successful = sum(1 for r in results if r['success'])
+    total_items = sum(r.get('items_count', 0) for r in results if r['success'])
+    
+    return {
+        'results': results,
+        'summary': {
+            'total_files': len(files),
+            'successful': successful,
+            'failed': len(files) - successful,
+            'total_items_parsed': total_items
+        }
+    }
 
 if __name__ == "__main__":
     import uvicorn
