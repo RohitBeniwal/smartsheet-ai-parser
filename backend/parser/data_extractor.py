@@ -4,11 +4,30 @@ Data extraction and normalization logic
 import logging
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+from functools import lru_cache
 import pandas as pd
 from dateutil import parser as date_parser
 from .config import DATE_FORMATS
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1000)
+def cached_date_parse(value_str: str) -> Optional[str]:
+    """
+    Cached date parsing for performance on duplicate dates
+    
+    Args:
+        value_str: Date string to parse
+        
+    Returns:
+        ISO format date string or None
+    """
+    try:
+        parsed_date = date_parser.parse(value_str, dayfirst=True)
+        return parsed_date.strftime('%Y-%m-%d')
+    except:
+        return None
 
 
 class DataExtractor:
@@ -161,12 +180,10 @@ class DataExtractor:
         if not value_str:
             return None
         
-        # Try dateutil parser first (handles many formats)
-        try:
-            parsed_date = date_parser.parse(value_str, dayfirst=True)
-            return parsed_date.strftime('%Y-%m-%d')
-        except:
-            pass
+        # Try cached parser first for common dates
+        cached_result = cached_date_parse(value_str)
+        if cached_result:
+            return cached_result
         
         # Try specific formats
         for fmt in DATE_FORMATS:

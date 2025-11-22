@@ -37,12 +37,27 @@ class ExcelParser:
         logger.info(f"Starting to parse file: {file_path}")
         
         try:
-            # Load the Excel file
-            wb = openpyxl.load_workbook(file_path, data_only=True)
+            # Load the Excel file in read-only mode for better performance
+            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
             ws = wb.active
             
-            # Read into pandas for easier manipulation
-            df = pd.read_excel(file_path, sheet_name=0, header=None)
+            # Try calamine engine for better performance, fallback to openpyxl
+            try:
+                df = pd.read_excel(
+                    file_path, 
+                    sheet_name=0, 
+                    header=None, 
+                    dtype=str,
+                    engine='calamine'
+                )
+                logger.debug("Using calamine engine for faster parsing")
+            except (ImportError, ValueError):
+                # Fallback to default engine if calamine not available
+                df = pd.read_excel(file_path, sheet_name=0, header=None, dtype=str)
+                logger.debug("Using default engine")
+            
+            # Close the workbook after reading (required for read-only mode)
+            wb.close()
             
             logger.info(f"Loaded sheet with {len(df)} rows and {len(df.columns)} columns")
             

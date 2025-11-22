@@ -2,11 +2,50 @@
 Column mapping logic - maps detected headers to standard field names
 """
 import logging
+import re
 from typing import Dict, List, Optional, Tuple
 from fuzzywuzzy import fuzz
 from .config import FIELD_PATTERNS, MILESTONE_KEYWORDS, MILESTONE_SUBFIELDS
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_column_name(name: str) -> str:
+    """
+    Normalize column name for better matching
+    
+    Args:
+        name: Column name to normalize
+        
+    Returns:
+        Normalized column name
+    """
+    if not name or not isinstance(name, str):
+        return ""
+    
+    # Convert to lowercase
+    name = name.lower().strip()
+    
+    # Remove special characters except spaces and hyphens
+    name = re.sub(r'[^\w\s-]', '', name)
+    
+    # Handle common abbreviations
+    abbreviations = {
+        ' no ': ' number ',
+        ' qty ': ' quantity ',
+        ' pt ': ' point ',
+        ' amt ': ' amount ',
+        ' req ': ' required ',
+        ' spec ': ' specification ',
+    }
+    
+    for abbr, full in abbreviations.items():
+        name = name.replace(abbr, full)
+    
+    # Remove extra whitespace
+    name = ' '.join(name.split())
+    
+    return name
 
 # Confidence thresholds
 EXACT_MATCH_CONFIDENCE = 1.0
@@ -81,10 +120,13 @@ class ColumnMapper:
             if header is None:
                 continue
             
-            header_lower = str(header).strip().lower()
+            # Normalize column name for better matching
+            header_normalized = normalize_column_name(str(header))
+            header_lower = header_normalized
             
             for pattern in patterns:
-                pattern_lower = pattern.lower()
+                pattern_normalized = normalize_column_name(pattern)
+                pattern_lower = pattern_normalized
                 
                 # Check for exact match
                 if pattern_lower == header_lower:
