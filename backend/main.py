@@ -571,19 +571,35 @@ async def batch_upload(files: List[UploadFile] = File(...)):
             results.append(result)
             logger.info(f"Completed processing: {result['filename']}")
     
-    # Insert all successful items to MongoDB
+    # Insert all successful items to MongoDB with duplicate checking
     for result in results:
         if result['success'] and 'items' in result:
             items = result['items']
             if items:
-                for item in items:
-                    item['created_at'] = datetime.utcnow()
-                    item['updated_at'] = datetime.utcnow()
+                # Check for duplicates before inserting
+                first_item = items[0]
+                existing = await db.production_items.find_one({
+                    'source_file': result['filename'],
+                    'order_number': first_item.get('order_number')
+                })
                 
-                await db.production_items.insert_many(items)
+                if existing:
+                    # Mark as duplicate, don't insert
+                    result['success'] = False
+                    result['error'] = f"Duplicate detected: File already uploaded"
+                    result['items_count'] = 0
+                    logger.warning(f"Duplicate detected for {result['filename']}")
+                else:
+                    # No duplicate - insert
+                    for item in items:
+                        item['created_at'] = datetime.utcnow()
+                        item['updated_at'] = datetime.utcnow()
+                    
+                    await db.production_items.insert_many(items)
             
             # Remove items from result (don't send in response)
-            del result['items']
+            if 'items' in result:
+                del result['items']
     
     # Calculate summary
     successful = sum(1 for r in results if r['success'])
