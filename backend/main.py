@@ -150,7 +150,8 @@ async def upload_file(file: UploadFile = File(...)):
             message=f"Successfully parsed and stored {len(items)} items",
             filename=file.filename,
             total_items=len(items),
-            items_preview=items_preview
+            items_preview=items_preview,
+            ai_summary=parse_result.get('ai_summary')
         )
         
     except Exception as e:

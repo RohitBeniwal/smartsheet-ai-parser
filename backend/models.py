@@ -96,6 +96,7 @@ class FileUploadResponse(BaseModel):
     filename: str
     total_items: int
     items_preview: Optional[List[Dict[str, Any]]] = None
+    ai_summary: Optional[str] = None
     error: Optional[str] = None
 
 

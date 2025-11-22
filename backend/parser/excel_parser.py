@@ -9,6 +9,7 @@ from datetime import datetime
 from .header_detector import HeaderDetector
 from .column_mapper import ColumnMapper
 from .data_extractor import DataExtractor
+from .openai_enhancer import OpenAIEnhancer
 
 logger = logging.getLogger(__name__)
 
@@ -16,10 +17,11 @@ logger = logging.getLogger(__name__)
 class ExcelParser:
     """Main parser for production planning Excel files"""
     
-    def __init__(self):
+    def __init__(self, enable_ai: bool = True):
         self.header_detector = HeaderDetector()
         self.column_mapper = ColumnMapper()
         self.data_extractor = DataExtractor()
+        self.ai_enhancer = OpenAIEnhancer() if enable_ai else None
     
     def parse_file(self, file_path: str, filename: str = None) -> Dict[str, Any]:
         """
@@ -64,18 +66,36 @@ class ExcelParser:
             # Step 4: Extract data rows
             items = self.data_extractor.extract_rows(df, header_row_idx, field_map)
             
+            # Step 5: Apply AI enhancements (if available)
+            if self.ai_enhancer and self.ai_enhancer.enabled:
+                try:
+                    # Validate data with GPT
+                    items = self.ai_enhancer.validate_data(items)
+                    logger.info("AI validation applied")
+                except Exception as e:
+                    logger.warning(f"AI validation skipped: {e}")
+            
             # Add metadata to each item
             for item in items:
                 item['source_file'] = filename or file_path
                 item['uploaded_at'] = datetime.utcnow()
                 item['status'] = self._derive_status(item)
             
+            # Generate AI summary (if available)
+            summary = None
+            if self.ai_enhancer and self.ai_enhancer.enabled:
+                try:
+                    summary = self.ai_enhancer.generate_summary(items, filename or file_path)
+                except Exception as e:
+                    logger.warning(f"AI summary skipped: {e}")
+            
             result = {
                 'success': True,
                 'items': items,
                 'total_items': len(items),
                 'source_file': filename or file_path,
-                'parsed_at': datetime.utcnow().isoformat()
+                'parsed_at': datetime.utcnow().isoformat(),
+                'ai_summary': summary
             }
             
             logger.info(f"Successfully parsed {len(items)} items from {file_path}")

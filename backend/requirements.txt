@@ -14,3 +14,4 @@ cors==1.0.1
 fuzzywuzzy==0.18.0
 python-Levenshtein==0.25.0
 anthropic==0.39.0
+openai==1.54.0
