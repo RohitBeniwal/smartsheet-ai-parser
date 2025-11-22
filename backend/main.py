@@ -124,9 +124,8 @@ async def upload_file(file: UploadFile = File(...)):
                 error=parse_result.get('error', 'Unknown error')
             )
         
-        # Check for duplicates
+        # Check for duplicates and prevent insertion
         items = parse_result['items']
-        duplicate_warning = None
         if items:
             # Check if similar file was already uploaded
             first_item = items[0]
@@ -136,9 +135,18 @@ async def upload_file(file: UploadFile = File(...)):
             })
             
             if existing:
-                duplicate_warning = f"File '{file.filename}' may have been uploaded before"
-                logger.warning(duplicate_warning)
+                # Duplicate found - don't insert
+                error_msg = f"Duplicate detected: File '{file.filename}' with order '{first_item.get('order_number')}' was already uploaded"
+                logger.warning(error_msg)
+                return FileUploadResponse(
+                    success=False,
+                    message="Duplicate file detected",
+                    filename=file.filename,
+                    total_items=0,
+                    error=error_msg
+                )
             
+            # No duplicate - proceed with insertion
             # Add created_at and updated_at timestamps
             for item in items:
                 item['created_at'] = datetime.utcnow()
