@@ -328,6 +328,34 @@ curl -X POST "http://localhost:8000/api/learn-pattern?column_name=SKU&standard_f
 curl "http://localhost:8000/api/learned-patterns"
 ```
 
+### Test Enterprise Features
+
+**Get Statistics:**
+```bash
+curl "http://localhost:8000/api/statistics"
+```
+
+**View Upload History:**
+```bash
+curl "http://localhost:8000/api/upload-history"
+```
+
+**Export to Excel:**
+```bash
+curl "http://localhost:8000/api/export" --output exported_data.xlsx
+
+# Or with filters
+curl "http://localhost:8000/api/export?status=completed" --output completed_orders.xlsx
+```
+
+**Batch Upload (Multiple Files):**
+```bash
+curl -X POST "http://localhost:8000/api/batch-upload" \
+  -F "files=@data/tna-uno.xlsx" \
+  -F "files=@data/tna-dos.xlsx" \
+  -F "files=@data/tna-tres.xlsx"
+```
+
 ## 📚 Documentation
 
 - **IMPLEMENTATION.md** - Detailed technical implementation
