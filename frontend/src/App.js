@@ -12,10 +12,13 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [uploadStatus, setUploadStatus] = useState(null);
+  const [statistics, setStatistics] = useState(null);
+  const [aiSummary, setAiSummary] = useState(null);
 
   // Fetch production items on component mount
   useEffect(() => {
     fetchProductionItems();
+    fetchStatistics();
   }, []);
 
   const fetchProductionItems = async () => {
@@ -29,6 +32,35 @@ function App() {
       console.error('Error fetching production items:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchStatistics = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/statistics`);
+      setStatistics(response.data);
+    } catch (err) {
+      console.error('Error fetching statistics:', err);
+    }
+  };
+
+  const handleExport = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/export`, {
+        responseType: 'blob'
+      });
+      
+      // Create download link
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `production_data_${new Date().toISOString().split('T')[0]}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      setError('Failed to export data');
+      console.error('Export error:', err);
     }
   };
 
@@ -48,10 +80,16 @@ function App() {
 
       setUploadStatus('success');
       console.log('Upload successful:', response.data);
+      
+      // Set AI summary if available
+      if (response.data.ai_summary) {
+        setAiSummary(response.data.ai_summary);
+      }
 
-      // Refresh production items after successful upload
+      // Refresh production items and statistics after successful upload
       setTimeout(() => {
         fetchProductionItems();
+        fetchStatistics();
         setUploadStatus(null);
       }, 2000);
     } catch (err) {
@@ -75,6 +113,17 @@ function App() {
               Production Planning Dashboard
             </h1>
             <div className="flex items-center space-x-4">
+              {productionItems.length > 0 && (
+                <button
+                  onClick={handleExport}
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                >
+                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  Export
+                </button>
+              )}
               <span className="text-sm text-gray-500">
                 {productionItems.length} items
               </span>
@@ -105,8 +154,52 @@ function App() {
                 <p className="text-sm text-red-800">{error}</p>
               </div>
             )}
+            {aiSummary && (
+              <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-md">
+                <div className="flex items-start">
+                  <svg className="w-5 h-5 text-blue-600 mt-0.5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <div>
+                    <h4 className="text-sm font-semibold text-blue-900 mb-1">AI Summary</h4>
+                    <p className="text-sm text-blue-800">{aiSummary}</p>
+                    <button
+                      onClick={() => setAiSummary(null)}
+                      className="text-xs text-blue-600 hover:text-blue-800 mt-2"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
+
+        {/* Statistics Cards */}
+        {statistics && (
+          <div className="mb-8">
+            <h2 className="text-lg font-semibold mb-4">Statistics</h2>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="text-sm font-medium text-gray-500">Total Orders</div>
+                <div className="mt-2 text-3xl font-bold text-gray-900">{statistics.total_items}</div>
+              </div>
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="text-sm font-medium text-gray-500">Avg Quantity</div>
+                <div className="mt-2 text-3xl font-bold text-gray-900">{statistics.average_quantity?.toLocaleString()}</div>
+              </div>
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="text-sm font-medium text-gray-500">Completed</div>
+                <div className="mt-2 text-3xl font-bold text-green-600">{statistics.by_status?.completed || 0}</div>
+              </div>
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="text-sm font-medium text-gray-500">Source Files</div>
+                <div className="mt-2 text-3xl font-bold text-gray-900">{Object.keys(statistics.by_source || {}).length}</div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Dashboard Section */}
         <div className="mb-8">
